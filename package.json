@@ -4,6 +4,8 @@
   "scripts": {
     "build": "react-router build",
     "dev": "shopify app dev",
+    "seed:dev-store": "node ./scripts/seed-dev-store.js",
+    "seed:dev-store:dry-run": "node ./scripts/seed-dev-store.js --dry-run",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
     "deploy": "shopify app deploy",

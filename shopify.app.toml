@@ -10,7 +10,7 @@ automatically_update_urls_on_dev = true
 include_config_on_deploy = true
 
 [access_scopes]
-scopes = "read_orders,read_customers"
+scopes = "read_products,read_customers,write_customers,read_orders,write_orders"
 
 [webhooks]
 api_version = "2026-07"
