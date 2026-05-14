@@ -2,6 +2,8 @@ import { Fragment, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../../shopify.server";
+import { calculateCustomerMetrics, type CustomerSegment } from "../../domain/customerMetrics";
+import { MOCK_CUSTOMER_ORDER_HISTORIES, MOCK_METRICS_NOW } from "./mockCustomerOrderHistories";
 import styles from "./styles.module.css";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -18,34 +20,69 @@ interface Customer {
   segment: Segment;
   orderCount: number;
   totalSpent: number;
+  averageOrderValue: number;
   lastOrderDate: string;
   daysSinceLastOrder: number;
   avgOrderFrequencyDays: number;
   expectedNextOrderDate: string;
   delayDays: number;
   riskScore: number;
+  explanation: string;
   suggestedAction: string;
 }
 
-const MOCK_CUSTOMERS: Customer[] = [
-  { id: "1001", segment: "Lost", orderCount: 8, totalSpent: 1240.0, lastOrderDate: "Aug 16, 2025", daysSinceLastOrder: 270, avgOrderFrequencyDays: 45, expectedNextOrderDate: "Sep 30, 2025", delayDays: 225, riskScore: 96, suggestedAction: "Send 20% winback offer" },
-  { id: "1002", segment: "Lost", orderCount: 3, totalSpent: 387.5, lastOrderDate: "Oct 15, 2025", daysSinceLastOrder: 210, avgOrderFrequencyDays: 63, expectedNextOrderDate: "Dec 17, 2025", delayDays: 147, riskScore: 91, suggestedAction: "Send winback email" },
-  { id: "1003", segment: "Lost", orderCount: 5, totalSpent: 725.0, lastOrderDate: "Nov 14, 2025", daysSinceLastOrder: 180, avgOrderFrequencyDays: 52, expectedNextOrderDate: "Jan 5, 2026", delayDays: 128, riskScore: 88, suggestedAction: "Send winback email" },
-  { id: "1004", segment: "At Risk", orderCount: 6, totalSpent: 892.0, lastOrderDate: "Jan 13, 2026", daysSinceLastOrder: 120, avgOrderFrequencyDays: 42, expectedNextOrderDate: "Feb 25, 2026", delayDays: 78, riskScore: 79, suggestedAction: "Send re-engagement email" },
-  { id: "1005", segment: "At Risk", orderCount: 4, totalSpent: 534.0, lastOrderDate: "Feb 11, 2026", daysSinceLastOrder: 91, avgOrderFrequencyDays: 38, expectedNextOrderDate: "Mar 21, 2026", delayDays: 53, riskScore: 72, suggestedAction: "Offer loyalty discount" },
-  { id: "1006", segment: "At Risk", orderCount: 2, totalSpent: 198.0, lastOrderDate: "Feb 20, 2026", daysSinceLastOrder: 82, avgOrderFrequencyDays: 35, expectedNextOrderDate: "Mar 27, 2026", delayDays: 47, riskScore: 68, suggestedAction: "Send re-engagement email" },
-  { id: "1007", segment: "At Risk", orderCount: 7, totalSpent: 1105.0, lastOrderDate: "Mar 1, 2026", daysSinceLastOrder: 73, avgOrderFrequencyDays: 40, expectedNextOrderDate: "Apr 10, 2026", delayDays: 33, riskScore: 65, suggestedAction: "Offer loyalty discount" },
-  { id: "1008", segment: "VIP", orderCount: 15, totalSpent: 4230.0, lastOrderDate: "May 1, 2026", daysSinceLastOrder: 12, avgOrderFrequencyDays: 20, expectedNextOrderDate: "May 21, 2026", delayDays: -8, riskScore: 8, suggestedAction: "Send VIP early access" },
-  { id: "1009", segment: "VIP", orderCount: 11, totalSpent: 2980.0, lastOrderDate: "Apr 22, 2026", daysSinceLastOrder: 21, avgOrderFrequencyDays: 24, expectedNextOrderDate: "May 16, 2026", delayDays: -3, riskScore: 12, suggestedAction: "Send VIP early access" },
-  { id: "1010", segment: "VIP", orderCount: 9, totalSpent: 2140.0, lastOrderDate: "Apr 10, 2026", daysSinceLastOrder: 33, avgOrderFrequencyDays: 30, expectedNextOrderDate: "May 10, 2026", delayDays: 3, riskScore: 18, suggestedAction: "Send VIP early access" },
-  { id: "1011", segment: "Loyal", orderCount: 12, totalSpent: 1560.0, lastOrderDate: "Apr 28, 2026", daysSinceLastOrder: 15, avgOrderFrequencyDays: 26, expectedNextOrderDate: "May 24, 2026", delayDays: -11, riskScore: 22, suggestedAction: "Invite to loyalty program" },
-  { id: "1012", segment: "Loyal", orderCount: 8, totalSpent: 940.0, lastOrderDate: "Mar 14, 2026", daysSinceLastOrder: 60, avgOrderFrequencyDays: 36, expectedNextOrderDate: "Apr 19, 2026", delayDays: 24, riskScore: 34, suggestedAction: "Invite to loyalty program" },
-  { id: "1013", segment: "Repeat", orderCount: 3, totalSpent: 420.0, lastOrderDate: "Apr 15, 2026", daysSinceLastOrder: 28, avgOrderFrequencyDays: 31, expectedNextOrderDate: "May 16, 2026", delayDays: -3, riskScore: 29, suggestedAction: "Cross-sell related products" },
-  { id: "1014", segment: "Repeat", orderCount: 2, totalSpent: 178.0, lastOrderDate: "Mar 25, 2026", daysSinceLastOrder: 49, avgOrderFrequencyDays: 29, expectedNextOrderDate: "Apr 23, 2026", delayDays: 20, riskScore: 41, suggestedAction: "Cross-sell related products" },
-  { id: "1015", segment: "New", orderCount: 1, totalSpent: 89.0, lastOrderDate: "May 8, 2026", daysSinceLastOrder: 5, avgOrderFrequencyDays: 21, expectedNextOrderDate: "May 29, 2026", delayDays: -16, riskScore: 15, suggestedAction: "Send welcome series" },
-  { id: "1016", segment: "New", orderCount: 1, totalSpent: 134.0, lastOrderDate: "May 5, 2026", daysSinceLastOrder: 8, avgOrderFrequencyDays: 21, expectedNextOrderDate: "May 26, 2026", delayDays: -13, riskScore: 20, suggestedAction: "Send welcome series" },
-  { id: "1017", segment: "New", orderCount: 2, totalSpent: 245.0, lastOrderDate: "Apr 30, 2026", daysSinceLastOrder: 13, avgOrderFrequencyDays: 24, expectedNextOrderDate: "May 24, 2026", delayDays: -11, riskScore: 17, suggestedAction: "Send welcome series" },
-];
+function toUiSegment(segment: CustomerSegment): Segment {
+  if (segment === "AT_RISK") return "At Risk";
+  if (segment === "LOST") return "Lost";
+  if (segment === "VIP") return "VIP";
+  if (segment === "LOYAL") return "Loyal";
+  if (segment === "REPEAT") return "Repeat";
+  return "New";
+}
+
+function suggestedActionForSegment(segment: Segment): string {
+  if (segment === "Lost") return "Send winback email";
+  if (segment === "At Risk") return "Send re-engagement email";
+  if (segment === "VIP") return "Send VIP early access";
+  if (segment === "Loyal") return "Invite to loyalty program";
+  if (segment === "Repeat") return "Cross-sell related products";
+  return "Send welcome series";
+}
+
+function fmtDate(isoDate: string | null): string {
+  if (!isoDate) return "N/A";
+  return new Date(isoDate).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+function fmtDays(n: number): string {
+  return Number.isInteger(n) ? `${n}` : n.toFixed(1);
+}
+
+const MOCK_CUSTOMERS: Customer[] = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) => {
+  const metrics = calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW });
+  const segment = toUiSegment(metrics.segment);
+
+  return {
+    id: metrics.shopifyCustomerId,
+    segment,
+    orderCount: metrics.orderCount,
+    totalSpent: metrics.totalSpent,
+    averageOrderValue: metrics.averageOrderValue,
+    lastOrderDate: fmtDate(metrics.lastOrderAt),
+    daysSinceLastOrder: metrics.daysSinceLastOrder,
+    avgOrderFrequencyDays: metrics.averageDaysBetweenOrders,
+    expectedNextOrderDate: fmtDate(metrics.expectedNextOrderAt),
+    delayDays: metrics.daysOverdue,
+    riskScore: metrics.riskScore,
+    explanation: metrics.explanation,
+    suggestedAction: suggestedActionForSegment(segment),
+  };
+});
 
 const TABS: Tab[] = ["All", "At Risk", "Lost", "VIP", "Loyal", "Repeat", "New"];
 
@@ -84,14 +121,6 @@ function delayLabel(delayDays: number) {
   return `${delayDays}d overdue`;
 }
 
-function riskExplanation(customer: Customer) {
-  if (customer.delayDays <= 0) {
-    return `This customer usually orders every ${customer.avgOrderFrequencyDays} days and is currently on schedule. They have placed ${customer.orderCount} orders and spent $${fmtMoney(customer.totalSpent)}.`;
-  }
-
-  return `This customer usually orders every ${customer.avgOrderFrequencyDays} days, but has not ordered for ${customer.daysSinceLastOrder} days. They have placed ${customer.orderCount} orders and spent $${fmtMoney(customer.totalSpent)}, so they may be worth recovering.`;
-}
-
 export default function Index() {
   const [activeTab, setActiveTab] = useState<Tab>("All");
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
@@ -103,7 +132,7 @@ export default function Index() {
 
   const revenueAtRisk = [...atRisk, ...lost].reduce((sum, customer) => sum + customer.totalSpent, 0);
   const atRiskRevenue = atRisk.reduce((sum, customer) => sum + customer.totalSpent, 0);
-  const highestValueLost = [...lost].sort((a, b) => b.totalSpent - a.totalSpent)[0];
+  const highestValueLost = [...lost].sort((a, b) => b.totalSpent - a.totalSpent)[0] ?? null;
 
   const filtered =
     activeTab === "All"
@@ -111,7 +140,9 @@ export default function Index() {
       : MOCK_CUSTOMERS.filter((customer) => customer.segment === activeTab);
 
   const topPriorities = [
-    `Win back Customer #${highestValueLost.id}, high-value lost customer, $${fmt(highestValueLost.totalSpent)} spent.`,
+    highestValueLost
+      ? `Win back Customer #${highestValueLost.id}, high-value lost customer, $${fmt(highestValueLost.totalSpent)} spent.`
+      : "No lost customers right now. Focus on preventing at-risk churn this week.",
     `Send re-engagement email to ${atRisk.length} at-risk customers (${fmt(atRiskRevenue)} at-risk revenue).`,
     `Invite ${vip.length} VIP customers to an early access campaign.`,
     `Nudge ${repeat.length} repeat customers with a cross-sell offer before they slow down.`,
@@ -259,7 +290,7 @@ export default function Index() {
                       <td className={styles.numericCell}>{customer.orderCount}</td>
                       <td className={styles.numericCell}>${fmtMoney(customer.totalSpent)}</td>
                       <td className={styles.numericCell}>{customer.lastOrderDate}</td>
-                      <td className={styles.numericCell}>Every {customer.avgOrderFrequencyDays}d</td>
+                      <td className={styles.numericCell}>Every {fmtDays(customer.avgOrderFrequencyDays)}d</td>
                       <td className={styles.numericCell}>{customer.expectedNextOrderDate}</td>
                       <td>
                         <span className={`${styles.delayPill} ${delayClass(customer.delayDays)}`}>
@@ -284,7 +315,8 @@ export default function Index() {
                       <tr className={styles.detailsRow}>
                         <td colSpan={11}>
                           <p className={styles.detailsText}>
-                            <strong>Why this customer is at risk:</strong> {riskExplanation(customer)}
+                            <strong>Segment reasoning:</strong> {customer.explanation} Average order value: $
+                            {fmtMoney(customer.averageOrderValue)}.
                           </p>
                         </td>
                       </tr>
