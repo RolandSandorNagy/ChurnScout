@@ -1,14 +1,48 @@
-﻿import { Fragment, useState } from "react";
+import { Fragment, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
+import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../../shopify.server";
-import { calculateCustomerMetrics, type CustomerSegment } from "../../domain/customerMetrics";
+import { calculateCustomerMetrics, type CustomerMetrics, type CustomerSegment } from "../../domain/customerMetrics";
+import { fetchShopifyOrderHistory } from "../../services/shopifyOrderHistory.server";
 import { MOCK_CUSTOMER_ORDER_HISTORIES, MOCK_METRICS_NOW } from "./mockCustomerOrderHistories";
 import styles from "./styles.module.css";
 
+const LIVE_PREVIEW_ORDER_LIMIT = 100;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-  return null;
+  const { admin } = await authenticate.admin(request);
+
+  const fallbackMetrics = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) =>
+    calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW }),
+  );
+
+  // TODO: Request read_all_orders if deeper order history is needed later.
+  // TODO: Add an optional derived-metrics cache only if performance/reporting requires it.
+  // TODO: Add explicit merchant controls for refresh behavior and live-vs-mock fallback mode.
+  try {
+    const liveHistories = await fetchShopifyOrderHistory(admin, {
+      limit: LIVE_PREVIEW_ORDER_LIMIT,
+    });
+
+    const liveMetrics = liveHistories
+      .map((history) => calculateCustomerMetrics(history))
+      .filter((metric) => metric.orderCount > 0);
+
+    if (liveMetrics.length > 0) {
+      return {
+        dataSource: "live" as const,
+        metrics: liveMetrics,
+      };
+    }
+  } catch (_error) {
+    // Keep dashboard stable and safely fall back to mock preview data.
+  }
+
+  return {
+    dataSource: "mock" as const,
+    metrics: fallbackMetrics,
+  };
 };
 
 type Segment = "At Risk" | "Lost" | "VIP" | "Loyal" | "Repeat" | "New";
@@ -211,8 +245,7 @@ function deriveWhyFlagged(customer: {
   return "No immediate churn risk";
 }
 
-const MOCK_CUSTOMERS: Customer[] = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) => {
-  const metrics = calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW });
+function toCustomer(metrics: CustomerMetrics): Customer {
   const segment = toUiSegment(metrics.segment);
 
   const baseCustomer = {
@@ -258,7 +291,7 @@ const MOCK_CUSTOMERS: Customer[] = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) =
       delayDays: baseCustomer.delayDays,
     }),
   };
-});
+}
 
 const TABS: Tab[] = ["All", "At Risk", "Lost", "VIP", "Loyal", "Repeat", "New"];
 
@@ -303,20 +336,23 @@ function delayLabel(delayDays: number) {
 }
 
 export default function Index() {
+  const { dataSource, metrics } = useLoaderData<typeof loader>();
+  const customers = metrics.map(toCustomer);
+
   const [activeTab, setActiveTab] = useState<Tab>("All");
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
 
-  const lost = MOCK_CUSTOMERS.filter((c) => c.segment === "Lost");
-  const actionableCustomers = MOCK_CUSTOMERS.filter((c) => c.priority !== "Low");
-  const highPriorityWinbacks = MOCK_CUSTOMERS.filter((c) => c.priority === "High");
-  const revenueOpportunity = MOCK_CUSTOMERS.reduce((sum, customer) => sum + customer.recoveryOpportunity, 0);
+  const lost = customers.filter((c) => c.segment === "Lost");
+  const actionableCustomers = customers.filter((c) => c.priority !== "Low");
+  const highPriorityWinbacks = customers.filter((c) => c.priority === "High");
+  const revenueOpportunity = customers.reduce((sum, customer) => sum + customer.recoveryOpportunity, 0);
 
   const filtered =
     activeTab === "All"
-      ? MOCK_CUSTOMERS
-      : MOCK_CUSTOMERS.filter((customer) => customer.segment === activeTab);
+      ? customers
+      : customers.filter((customer) => customer.segment === activeTab);
 
-  const sortedByPriority = [...MOCK_CUSTOMERS].sort((a, b) => {
+  const sortedByPriority = [...customers].sort((a, b) => {
     const priorityDelta = PRIORITY_SORT_WEIGHT[b.priority] - PRIORITY_SORT_WEIGHT[a.priority];
     if (priorityDelta !== 0) return priorityDelta;
 
@@ -341,11 +377,20 @@ export default function Index() {
       <p className={styles.subtitle}>
         Detect at-risk customers and customer winback opportunities from Shopify order history.
       </p>
+      <div className={styles.dataSourceMeta}>
+        <span className={`${styles.dataSourceBadge} ${dataSource === "live" ? styles.liveBadge : styles.mockBadge}`}>
+          {dataSource === "live" ? "Live Shopify data preview" : "Mock demo data"}
+        </span>
+        <p className={styles.dataSourceNote}>
+          Live preview fetches minimal Shopify order data in memory. ChurnScout does not store raw Shopify
+          order/customer data in this MVP.
+        </p>
+      </div>
 
       <s-section heading="Overview">
         <div className={styles.cardGrid}>
           <div className={styles.card}>
-            <div className={styles.cardValue}>{MOCK_CUSTOMERS.length}</div>
+            <div className={styles.cardValue}>{customers.length}</div>
             <div className={styles.cardLabel}>Customers reviewed</div>
           </div>
           <div className={`${styles.card} ${styles.cardWarning}`}>
@@ -375,7 +420,7 @@ export default function Index() {
               <strong>{highPriorityWinbacks.length} high-priority winbacks</strong>.
             </p>
             <p>
-              Based on recent purchase behavior, the current mock recovery opportunity is about{" "}
+              Based on recent purchase behavior, the current recovery opportunity is about{" "}
               <strong>${fmt(revenueOpportunity)}</strong>.
             </p>
           </div>
@@ -393,7 +438,7 @@ export default function Index() {
       <s-section heading="How ChurnScout calculates this">
         <div className={styles.calcBox}>
           ChurnScout compares each customer's usual purchase rhythm with their days since last order, then combines
-          overdue timing and customer value to assign priority and mock recommended actions.
+          overdue timing and customer value to assign priority and recommended actions.
         </div>
       </s-section>
 
@@ -421,8 +466,8 @@ export default function Index() {
           {TABS.map((tab) => {
             const count =
               tab === "All"
-                ? MOCK_CUSTOMERS.length
-                : MOCK_CUSTOMERS.filter((customer) => customer.segment === tab).length;
+                ? customers.length
+                : customers.filter((customer) => customer.segment === tab).length;
             return (
               <button
                 key={tab}
@@ -437,7 +482,7 @@ export default function Index() {
           })}
         </div>
 
-        <p className={styles.filterNote}>Filters are applied locally to mock data in this MVP prototype.</p>
+        <p className={styles.filterNote}>Filters are applied locally in this MVP preview.</p>
 
         <div className={styles.tableWrapper}>
           <table className={styles.table}>

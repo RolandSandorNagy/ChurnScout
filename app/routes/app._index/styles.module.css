@@ -1,10 +1,42 @@
-﻿.subtitle {
+.subtitle {
   margin: 0 0 16px;
   color: #6d7175;
   font-size: 0.95rem;
   line-height: 1.45;
 }
 
+
+.dataSourceMeta {
+  margin: 0 0 16px;
+}
+
+.dataSourceBadge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.liveBadge {
+  background: #e3f5e9;
+  color: #1c6b45;
+  border: 1px solid #8bc9a8;
+}
+
+.mockBadge {
+  background: #f6f6f7;
+  color: #6d7175;
+  border: 1px solid #d2d5d8;
+}
+
+.dataSourceNote {
+  margin: 8px 0 0;
+  color: #6d7175;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
 .cardGrid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
@@ -379,3 +411,4 @@
   font-size: 0.81rem;
   line-height: 1.45;
 }
+
