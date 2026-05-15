@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+﻿import { Fragment, useState } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../../shopify.server";
@@ -12,12 +12,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 };
 
 type Segment = "At Risk" | "Lost" | "VIP" | "Loyal" | "Repeat" | "New";
+type Priority = "High" | "Medium" | "Low";
 type BadgeTone = "info" | "success" | "warning" | "critical" | "caution" | "neutral" | "auto";
 type Tab = "All" | Segment;
 
 interface Customer {
   id: string;
   segment: Segment;
+  priority: Priority;
   orderCount: number;
   totalSpent: number;
   averageOrderValue: number;
@@ -27,9 +29,15 @@ interface Customer {
   expectedNextOrderDate: string;
   delayDays: number;
   riskScore: number;
+  recoveryOpportunity: number;
   explanation: string;
   suggestedAction: string;
+  whyFlagged: string;
 }
+
+const HIGH_SPEND_THRESHOLD = 1000;
+const HIGH_ORDER_COUNT_THRESHOLD = 6;
+const HIGH_RISK_THRESHOLD = 80;
 
 function toUiSegment(segment: CustomerSegment): Segment {
   if (segment === "AT_RISK") return "At Risk";
@@ -38,15 +46,6 @@ function toUiSegment(segment: CustomerSegment): Segment {
   if (segment === "LOYAL") return "Loyal";
   if (segment === "REPEAT") return "Repeat";
   return "New";
-}
-
-function suggestedActionForSegment(segment: Segment): string {
-  if (segment === "Lost") return "Send winback email";
-  if (segment === "At Risk") return "Send re-engagement email";
-  if (segment === "VIP") return "Send VIP early access";
-  if (segment === "Loyal") return "Invite to loyalty program";
-  if (segment === "Repeat") return "Cross-sell related products";
-  return "Send welcome series";
 }
 
 function fmtDate(isoDate: string | null): string {
@@ -63,11 +62,160 @@ function fmtDays(n: number): string {
   return Number.isInteger(n) ? `${n}` : n.toFixed(1);
 }
 
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function buildOverdueMultiple(daysSinceLastOrder: number, avgOrderFrequencyDays: number, orderCount: number): string | null {
+  if (orderCount < 2 || avgOrderFrequencyDays <= 0) return null;
+  const ratio = daysSinceLastOrder / avgOrderFrequencyDays;
+  if (ratio < 1.5) return null;
+  return `${fmtDays(ratio)}x later than usual`;
+}
+
+function derivePriority(customer: {
+  segment: Segment;
+  totalSpent: number;
+  orderCount: number;
+  riskScore: number;
+  delayDays: number;
+}): Priority {
+  const highValueSignal =
+    customer.totalSpent >= HIGH_SPEND_THRESHOLD ||
+    customer.orderCount >= HIGH_ORDER_COUNT_THRESHOLD ||
+    customer.riskScore >= HIGH_RISK_THRESHOLD;
+
+  if ((customer.segment === "Lost" || customer.segment === "At Risk") && highValueSignal) {
+    return "High";
+  }
+
+  if (customer.segment === "At Risk" || customer.segment === "Lost") {
+    return "Medium";
+  }
+
+  if ((customer.segment === "Loyal" || customer.segment === "VIP") && customer.delayDays > 0) {
+    return "Medium";
+  }
+
+  return "Low";
+}
+
+function deriveRecoveryOpportunity(customer: {
+  segment: Segment;
+  priority: Priority;
+  averageOrderValue: number;
+}): number {
+  if (customer.priority === "High" && (customer.segment === "At Risk" || customer.segment === "Lost")) {
+    return roundMoney(customer.averageOrderValue);
+  }
+
+  if (customer.priority === "Medium") {
+    return roundMoney(customer.averageOrderValue * 0.5);
+  }
+
+  return 0;
+}
+
+function deriveSuggestedAction(customer: {
+  segment: Segment;
+  priority: Priority;
+  riskScore: number;
+  totalSpent: number;
+  orderCount: number;
+  delayDays: number;
+}): string {
+  if (customer.priority === "High") {
+    if (
+      customer.segment === "Lost" &&
+      (customer.totalSpent >= HIGH_SPEND_THRESHOLD || customer.orderCount >= HIGH_ORDER_COUNT_THRESHOLD)
+    ) {
+      return "Send personal winback offer";
+    }
+
+    if ((customer.segment === "Lost" || customer.segment === "At Risk") && customer.riskScore >= 85) {
+      return "Send personal winback offer";
+    }
+
+    return "Send 10% reactivation discount";
+  }
+
+  if (customer.priority === "Medium") {
+    if (customer.segment === "At Risk" || customer.segment === "Lost") {
+      return "Send re-engagement email";
+    }
+
+    if (customer.segment === "VIP") {
+      return "Invite to VIP early access";
+    }
+
+    return "Cross-sell related products";
+  }
+
+  if (customer.segment === "New") {
+    return "Wait for second-purchase window";
+  }
+
+  if (customer.segment === "Repeat") {
+    if (customer.orderCount === 2 && customer.delayDays <= 10) {
+      return "Wait for second-purchase window";
+    }
+
+    return customer.delayDays > 0 ? "Send re-engagement email" : "Cross-sell related products";
+  }
+
+  if (customer.segment === "VIP") {
+    return "Invite to VIP early access";
+  }
+
+  return "No action needed yet";
+}
+
+function deriveWhyFlagged(customer: {
+  segment: Segment;
+  priority: Priority;
+  daysSinceLastOrder: number;
+  avgOrderFrequencyDays: number;
+  orderCount: number;
+  delayDays: number;
+}): string {
+  const overdueMultiple = buildOverdueMultiple(
+    customer.daysSinceLastOrder,
+    customer.avgOrderFrequencyDays,
+    customer.orderCount,
+  );
+
+  if (customer.segment === "Lost" && customer.priority === "High") {
+    return "High-value lost customer";
+  }
+
+  if ((customer.segment === "Lost" || customer.segment === "At Risk") && overdueMultiple) {
+    return overdueMultiple;
+  }
+
+  if ((customer.segment === "VIP" || customer.segment === "Loyal") && customer.delayDays > 0) {
+    return `${customer.delayDays}d overdue`;
+  }
+
+  if (customer.segment === "VIP") {
+    return "VIP still on track";
+  }
+
+  if (customer.segment === "New") {
+    return "New customer, waiting for repeat purchase";
+  }
+
+  if (customer.delayDays > 0) {
+    return `${customer.delayDays}d overdue`;
+  }
+
+  return "No immediate churn risk";
+}
+
 const MOCK_CUSTOMERS: Customer[] = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) => {
   const metrics = calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW });
   const segment = toUiSegment(metrics.segment);
 
-  return {
+  const baseCustomer = {
     id: metrics.shopifyCustomerId,
     segment,
     orderCount: metrics.orderCount,
@@ -80,7 +228,35 @@ const MOCK_CUSTOMERS: Customer[] = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) =
     delayDays: metrics.daysOverdue,
     riskScore: metrics.riskScore,
     explanation: metrics.explanation,
-    suggestedAction: suggestedActionForSegment(segment),
+  };
+
+  const priority = derivePriority(baseCustomer);
+  const recoveryOpportunity = deriveRecoveryOpportunity({
+    segment: baseCustomer.segment,
+    priority,
+    averageOrderValue: baseCustomer.averageOrderValue,
+  });
+
+  return {
+    ...baseCustomer,
+    priority,
+    recoveryOpportunity,
+    suggestedAction: deriveSuggestedAction({
+      segment: baseCustomer.segment,
+      priority,
+      riskScore: baseCustomer.riskScore,
+      totalSpent: baseCustomer.totalSpent,
+      orderCount: baseCustomer.orderCount,
+      delayDays: baseCustomer.delayDays,
+    }),
+    whyFlagged: deriveWhyFlagged({
+      segment: baseCustomer.segment,
+      priority,
+      daysSinceLastOrder: baseCustomer.daysSinceLastOrder,
+      avgOrderFrequencyDays: baseCustomer.avgOrderFrequencyDays,
+      orderCount: baseCustomer.orderCount,
+      delayDays: baseCustomer.delayDays,
+    }),
   };
 });
 
@@ -95,19 +271,24 @@ const SEGMENT_TONE: Record<Segment, BadgeTone> = {
   New: "info",
 };
 
+const PRIORITY_TONE_CLASS: Record<Priority, string> = {
+  High: styles.priorityHigh,
+  Medium: styles.priorityMedium,
+  Low: styles.priorityLow,
+};
+
+const PRIORITY_SORT_WEIGHT: Record<Priority, number> = {
+  High: 3,
+  Medium: 2,
+  Low: 1,
+};
+
 function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
 function fmtMoney(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-function riskClass(score: number) {
-  if (score <= 30) return styles.riskLow;
-  if (score <= 60) return styles.riskMedium;
-  if (score <= 80) return styles.riskHigh;
-  return styles.riskCritical;
 }
 
 function delayClass(delayDays: number) {
@@ -125,28 +306,35 @@ export default function Index() {
   const [activeTab, setActiveTab] = useState<Tab>("All");
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
 
-  const atRisk = MOCK_CUSTOMERS.filter((c) => c.segment === "At Risk");
   const lost = MOCK_CUSTOMERS.filter((c) => c.segment === "Lost");
-  const vip = MOCK_CUSTOMERS.filter((c) => c.segment === "VIP");
-  const repeat = MOCK_CUSTOMERS.filter((c) => c.segment === "Repeat");
-
-  const revenueAtRisk = [...atRisk, ...lost].reduce((sum, customer) => sum + customer.totalSpent, 0);
-  const atRiskRevenue = atRisk.reduce((sum, customer) => sum + customer.totalSpent, 0);
-  const highestValueLost = [...lost].sort((a, b) => b.totalSpent - a.totalSpent)[0] ?? null;
+  const actionableCustomers = MOCK_CUSTOMERS.filter((c) => c.priority !== "Low");
+  const highPriorityWinbacks = MOCK_CUSTOMERS.filter((c) => c.priority === "High");
+  const revenueOpportunity = MOCK_CUSTOMERS.reduce((sum, customer) => sum + customer.recoveryOpportunity, 0);
 
   const filtered =
     activeTab === "All"
       ? MOCK_CUSTOMERS
       : MOCK_CUSTOMERS.filter((customer) => customer.segment === activeTab);
 
-  const topPriorities = [
-    highestValueLost
-      ? `Win back Customer #${highestValueLost.id}, high-value lost customer, $${fmt(highestValueLost.totalSpent)} spent.`
-      : "No lost customers right now. Focus on preventing at-risk churn this week.",
-    `Send re-engagement email to ${atRisk.length} at-risk customers (${fmt(atRiskRevenue)} at-risk revenue).`,
-    `Invite ${vip.length} VIP customers to an early access campaign.`,
-    `Nudge ${repeat.length} repeat customers with a cross-sell offer before they slow down.`,
-  ];
+  const sortedByPriority = [...MOCK_CUSTOMERS].sort((a, b) => {
+    const priorityDelta = PRIORITY_SORT_WEIGHT[b.priority] - PRIORITY_SORT_WEIGHT[a.priority];
+    if (priorityDelta !== 0) return priorityDelta;
+
+    const opportunityDelta = b.recoveryOpportunity - a.recoveryOpportunity;
+    if (opportunityDelta !== 0) return opportunityDelta;
+
+    return b.riskScore - a.riskScore;
+  });
+
+  const topPriorityCustomers = sortedByPriority.filter((customer) => customer.priority !== "Low").slice(0, 4);
+
+  const topPriorities =
+    topPriorityCustomers.length > 0
+      ? topPriorityCustomers.map(
+          (customer) =>
+            `Customer #${customer.id}: ${customer.priority} priority, approx. $${fmt(customer.recoveryOpportunity)} recovery opportunity. ${customer.suggestedAction}.`,
+        )
+      : ["No urgent priorities this week. Keep monitoring customer rhythm and repeat purchases."];
 
   return (
     <s-page heading="ChurnScout">
@@ -158,23 +346,23 @@ export default function Index() {
         <div className={styles.cardGrid}>
           <div className={styles.card}>
             <div className={styles.cardValue}>{MOCK_CUSTOMERS.length}</div>
-            <div className={styles.cardLabel}>Customers analyzed</div>
+            <div className={styles.cardLabel}>Customers reviewed</div>
           </div>
           <div className={`${styles.card} ${styles.cardWarning}`}>
-            <div className={styles.cardValue}>{atRisk.length}</div>
-            <div className={styles.cardLabel}>At-risk customers</div>
+            <div className={styles.cardValue}>{actionableCustomers.length}</div>
+            <div className={styles.cardLabel}>Need attention</div>
           </div>
           <div className={`${styles.card} ${styles.cardCritical}`}>
             <div className={styles.cardValue}>{lost.length}</div>
             <div className={styles.cardLabel}>Lost customers</div>
           </div>
-          <div className={`${styles.card} ${styles.cardSuccess}`}>
-            <div className={styles.cardValue}>{vip.length}</div>
-            <div className={styles.cardLabel}>VIP customers</div>
+          <div className={`${styles.card} ${styles.cardCritical}`}>
+            <div className={styles.cardValue}>{highPriorityWinbacks.length}</div>
+            <div className={styles.cardLabel}>High-priority winbacks</div>
           </div>
-          <div className={`${styles.card} ${styles.cardWarning}`}>
-            <div className={styles.cardValue}>${fmt(revenueAtRisk)}</div>
-            <div className={styles.cardLabel}>Estimated revenue at risk</div>
+          <div className={`${styles.card} ${styles.cardSuccess}`}>
+            <div className={styles.cardValue}>${fmt(revenueOpportunity)}</div>
+            <div className={styles.cardLabel}>Revenue opportunity</div>
           </div>
         </div>
       </s-section>
@@ -183,12 +371,12 @@ export default function Index() {
         <div className={styles.insightBox}>
           <div className={styles.insightBody}>
             <p>
-              Focus this week on your <strong>{atRisk.length} at-risk customers</strong>, especially high spenders
-              with 90+ days since their last order. A targeted winback message could protect about <strong>${fmt(atRiskRevenue)}</strong>{" "}
-              in near-term revenue before these customers move into the lost segment.
+              You have <strong>{actionableCustomers.length} customers needing attention</strong>, including{" "}
+              <strong>{highPriorityWinbacks.length} high-priority winbacks</strong>.
             </p>
             <p>
-              Also run a separate winback campaign for your <strong>{lost.length} lost customers</strong>.
+              Based on recent purchase behavior, the current mock recovery opportunity is about{" "}
+              <strong>${fmt(revenueOpportunity)}</strong>.
             </p>
           </div>
         </div>
@@ -204,8 +392,8 @@ export default function Index() {
 
       <s-section heading="How ChurnScout calculates this">
         <div className={styles.calcBox}>
-          ChurnScout compares each customer's usual purchase rhythm with the time since their last order. Customers are
-          marked at risk when they are significantly overdue based on their own buying pattern.
+          ChurnScout compares each customer's usual purchase rhythm with their days since last order, then combines
+          overdue timing and customer value to assign priority and mock recommended actions.
         </div>
       </s-section>
 
@@ -256,24 +444,11 @@ export default function Index() {
             <thead>
               <tr>
                 <th>Customer</th>
-                <th>Segment</th>
-                <th>Orders</th>
-                <th>Total spent</th>
-                <th>Last order</th>
-                <th>
-                  Avg. freq
-                  <span
-                    className={styles.helpHint}
-                    title="Based on the average number of days between this customer's previous orders."
-                  >
-                    ?
-                  </span>
-                </th>
-                <th>Next order</th>
-                <th>Delay</th>
-                <th>Risk</th>
-                <th>Action</th>
-                <th>Why</th>
+                <th>Status</th>
+                <th>Purchase</th>
+                <th>Timing</th>
+                <th>Priority</th>
+                <th>Recommended action</th>
               </tr>
             </thead>
             <tbody>
@@ -283,40 +458,65 @@ export default function Index() {
                 return (
                   <Fragment key={customer.id}>
                     <tr>
-                      <td className={styles.customerLabel}>Customer #{customer.id}</td>
+                      <td>
+                        <div className={styles.customerLabel}>Customer #{customer.id}</div>
+                        <div className={styles.customerControls}>
+                          <button
+                            type="button"
+                            className={styles.detailsButton}
+                            onClick={() => setExpandedCustomerId(isExpanded ? null : customer.id)}
+                          >
+                            {isExpanded ? "Hide details" : "Details"}
+                          </button>
+                        </div>
+                      </td>
                       <td>
                         <s-badge tone={SEGMENT_TONE[customer.segment]}>{customer.segment}</s-badge>
                       </td>
-                      <td className={styles.numericCell}>{customer.orderCount}</td>
-                      <td className={styles.numericCell}>${fmtMoney(customer.totalSpent)}</td>
-                      <td className={styles.numericCell}>{customer.lastOrderDate}</td>
-                      <td className={styles.numericCell}>Every {fmtDays(customer.avgOrderFrequencyDays)}d</td>
-                      <td className={styles.numericCell}>{customer.expectedNextOrderDate}</td>
                       <td>
-                        <span className={`${styles.delayPill} ${delayClass(customer.delayDays)}`}>
-                          {delayLabel(customer.delayDays)}
-                        </span>
+                        <div className={styles.compactStat}>
+                          {customer.orderCount} orders - ${fmtMoney(customer.totalSpent)} spent
+                        </div>
+                        <div className={styles.subtleText}>AOV ${fmtMoney(customer.averageOrderValue)}</div>
                       </td>
                       <td>
-                        <span className={`${styles.riskScore} ${riskClass(customer.riskScore)}`}>{customer.riskScore}</span>
+                        <div className={styles.compactStat}>
+                          {customer.orderCount >= 2
+                            ? `Usually every ${fmtDays(customer.avgOrderFrequencyDays)}d`
+                            : "Purchase rhythm forming"}
+                        </div>
+                        <div className={styles.subtleTextRow}>
+                          <span className={`${styles.delayPill} ${delayClass(customer.delayDays)}`}>
+                            {delayLabel(customer.delayDays)}
+                          </span>
+                          <span className={styles.subtleText}>Last order {customer.daysSinceLastOrder}d ago</span>
+                        </div>
                       </td>
-                      <td className={styles.actionText}>{customer.suggestedAction}</td>
                       <td>
-                        <button
-                          type="button"
-                          className={styles.detailsButton}
-                          onClick={() => setExpandedCustomerId(isExpanded ? null : customer.id)}
-                        >
-                          {isExpanded ? "Hide" : "Details"}
-                        </button>
+                        <div className={styles.priorityCell}>
+                          <span className={`${styles.priorityPill} ${PRIORITY_TONE_CLASS[customer.priority]}`}>
+                            {customer.priority}
+                          </span>
+                          <div className={styles.subtleText}>
+                            {customer.recoveryOpportunity > 0
+                              ? `$${fmtMoney(customer.recoveryOpportunity)} opportunity`
+                              : "Not urgent"}
+                            {` - Risk ${customer.riskScore}`}
+                          </div>
+                        </div>
+                      </td>
+                      <td className={styles.actionText}>
+                        <div className={styles.actionPrimary}>{customer.suggestedAction}</div>
+                        <div className={styles.actionSecondary}>Why: {customer.whyFlagged}</div>
                       </td>
                     </tr>
                     {isExpanded ? (
                       <tr className={styles.detailsRow}>
-                        <td colSpan={11}>
+                        <td colSpan={6}>
                           <p className={styles.detailsText}>
-                            <strong>Segment reasoning:</strong> {customer.explanation} Average order value: $
-                            {fmtMoney(customer.averageOrderValue)}.
+                            <strong>Segment reasoning:</strong> {customer.explanation} Last order: {customer.lastOrderDate}. Expected
+                            next order: {customer.expectedNextOrderDate}. Estimated recovery opportunity: $
+                            {fmtMoney(customer.recoveryOpportunity)}.
                           </p>
                         </td>
                       </tr>
