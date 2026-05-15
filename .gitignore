@@ -18,6 +18,8 @@ database.sqlite
 .env.*
 !.env.example
 !.env.sample
+.env.seed
+.env.seed.*
 
 
 
