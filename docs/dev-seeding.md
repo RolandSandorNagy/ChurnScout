@@ -20,14 +20,32 @@ It is not part of app runtime behavior and must not be used in production stores
 - Tags records with `churnscout-demo-data` and pattern tags like `churnscout-vip-customer`.
 - Supports dry-run mode (`--dry-run`) with no Shopify API calls.
 
-## Create a Separate Seed Token (Dev Store)
+## Authentication for Dev Seeding
 
-Create a separate admin token for your dev store (not your production app token):
+New Shopify Dev Dashboard apps usually do not expose classic `shpat_...` Admin tokens directly in the same way older setups did.
+
+This script supports two auth modes:
+
+1. Legacy/manual token mode (optional fallback):
+   - `SHOPIFY_SEED_ADMIN_ACCESS_TOKEN`
+2. Client credentials mode (preferred for new Dev Dashboard apps):
+   - `SHOPIFY_SEED_CLIENT_ID`
+   - `SHOPIFY_SEED_CLIENT_SECRET`
+   - Script exchanges credentials at:
+     - `https://{SHOPIFY_SEED_STORE_DOMAIN}/admin/oauth/access_token`
+     - `grant_type=client_credentials`
+
+The script prints which auth mode is being used, but never prints secrets or full tokens.
+
+## Create a Separate Seed App (Dev Store)
+
+Create/use a separate app setup for seeding in your dev store (not your production app runtime credentials):
 
 1. In the dev store admin, create/install a custom app for seeding.
 2. Grant only the minimum Admin API scopes needed (below).
-3. Reveal/copy the Admin API access token.
-4. Store token locally in env vars (do not commit).
+3. From Credentials, copy Client ID and Client secret (preferred flow).
+4. Optionally use a legacy Admin API token if your setup provides one.
+5. Store credentials locally in env vars (do not commit).
 
 Shopify docs:
 - Custom app Admin token generation: https://shopify.dev/docs/apps/build/authentication-authorization/access-tokens/generate-app-access-tokens-admin
@@ -44,12 +62,16 @@ Notes:
 
 ## Environment Variables
 
-Required:
+Required for real seeding runs:
 
 - `SHOPIFY_SEED_STORE_DOMAIN`
   - Example: `your-dev-store.myshopify.com`
-- `SHOPIFY_SEED_ADMIN_ACCESS_TOKEN`
-  - Admin API access token from the separate seed app/token
+- Authentication (choose one mode):
+  - Preferred:
+    - `SHOPIFY_SEED_CLIENT_ID`
+    - `SHOPIFY_SEED_CLIENT_SECRET`
+  - Optional legacy fallback:
+    - `SHOPIFY_SEED_ADMIN_ACCESS_TOKEN`
 
 Optional:
 
@@ -76,7 +98,16 @@ Actual seeding run:
 npm run seed:dev-store
 ```
 
-Example with env vars inline:
+Actual seeding with client credentials:
+
+```bash
+SHOPIFY_SEED_STORE_DOMAIN=your-dev-store.myshopify.com \
+SHOPIFY_SEED_CLIENT_ID=your_client_id \
+SHOPIFY_SEED_CLIENT_SECRET=your_client_secret \
+npm run seed:dev-store
+```
+
+Actual seeding with legacy token fallback:
 
 ```bash
 SHOPIFY_SEED_STORE_DOMAIN=your-dev-store.myshopify.com \
@@ -86,7 +117,8 @@ npm run seed:dev-store
 
 ## What Gets Generated
 
-- 20-50 fake customers (default 24, configurable with `--customers=20..50`)
+- 1-50 fake customers (default 24, configurable with `--customers=1..50`)
+- Recommended for realistic churn testing: 20-50 customers
 - Each customer gets 1-8 fake historical orders
 - Pattern mix includes:
   - New customer
@@ -101,5 +133,10 @@ npm run seed:dev-store
 
 ## Troubleshooting
 
-- If you see scope/auth errors, verify the separate seed token has `write_customers` and `write_orders`.
+- If token exchange fails:
+  - Verify the seed app is installed on the dev store
+  - Verify the app and dev store are in the same Dev Dashboard organization
+  - Verify client ID and client secret are correct
+  - Verify `write_customers` and `write_orders` scopes are granted
+- If you see scope/auth errors in legacy token mode, verify the separate seed token has `write_customers` and `write_orders`.
 - If you hit rate-limit errors, keep the default order delay or increase it with `--order-delay-ms=...`.

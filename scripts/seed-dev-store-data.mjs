@@ -12,10 +12,9 @@ import process from "node:process";
 
 const DEMO_TAG = "churnscout-demo-data";
 const DEFAULT_CUSTOMER_COUNT = 24;
-const MIN_CUSTOMER_COUNT = 20;
+const MIN_CUSTOMER_COUNT = 1;
+const RECOMMENDED_MIN_CUSTOMER_COUNT = 20;
 const MAX_CUSTOMER_COUNT = 50;
-const MIN_ORDER_COUNT = 1;
-const MAX_ORDER_COUNT = 8;
 const DEFAULT_CUSTOMER_DELAY_MS = 300;
 const DEFAULT_ORDER_DELAY_MS = 12_500;
 const DEFAULT_RETRY_COUNT = 3;
@@ -159,7 +158,7 @@ function parseArgs(argv) {
     if (arg.startsWith("--customers=")) {
       const value = Number.parseInt(arg.slice("--customers=".length), 10);
       if (!Number.isInteger(value)) {
-        throw new Error("Invalid --customers value. Use an integer between 20 and 50.");
+        throw new Error("Invalid --customers value. Use an integer between 1 and 50.");
       }
       args.customerCount = value;
       continue;
@@ -387,6 +386,106 @@ async function safeJson(response) {
   }
 }
 
+function buildTokenTroubleshootingMessage(prefix) {
+  return `${prefix}
+Troubleshooting checklist:
+- Verify the seed app is installed on this development store.
+- Verify the seed app and development store are in the same Shopify Dev Dashboard organization.
+- Verify SHOPIFY_SEED_CLIENT_ID and SHOPIFY_SEED_CLIENT_SECRET are correct.
+- Verify the app has write_customers and write_orders Admin API scopes.`;
+}
+
+async function exchangeClientCredentialsToken(storeDomain, clientId, clientSecret) {
+  const endpoint = `https://${storeDomain}/admin/oauth/access_token`;
+  const form = new URLSearchParams({
+    grant_type: "client_credentials",
+    client_id: clientId,
+    client_secret: clientSecret,
+  });
+
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: form.toString(),
+    });
+  } catch (error) {
+    throw new Error(
+      buildTokenTroubleshootingMessage(
+        `Token exchange request failed at ${endpoint}: ${error instanceof Error ? error.message : String(error)}\n`,
+      ),
+    );
+  }
+
+  const payload = await safeJson(response);
+  if (!response.ok) {
+    const details = payload ? JSON.stringify(payload) : "<non-JSON response>";
+    throw new Error(
+      buildTokenTroubleshootingMessage(
+        `Token exchange failed with HTTP ${response.status}: ${details}\n`,
+      ),
+    );
+  }
+
+  const accessToken = payload?.access_token;
+  if (!accessToken || typeof accessToken !== "string") {
+    throw new Error(
+      buildTokenTroubleshootingMessage(
+        "Token exchange succeeded but no access_token was returned.\n",
+      ),
+    );
+  }
+
+  return accessToken;
+}
+
+async function resolveAccessToken({ dryRun, storeDomain }) {
+  const adminAccessToken = (process.env.SHOPIFY_SEED_ADMIN_ACCESS_TOKEN || "").trim();
+  const clientId = (process.env.SHOPIFY_SEED_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.SHOPIFY_SEED_CLIENT_SECRET || "").trim();
+
+  if (dryRun) {
+    if (adminAccessToken) {
+      return {
+        mode: "legacy admin token provided (unused in dry-run)",
+        accessToken: "",
+      };
+    }
+    if (clientId && clientSecret) {
+      return {
+        mode: "client credentials provided (unused in dry-run)",
+        accessToken: "",
+      };
+    }
+    return {
+      mode: "dry-run without credentials",
+      accessToken: "",
+    };
+  }
+
+  if (adminAccessToken) {
+    return {
+      mode: "legacy admin access token (SHOPIFY_SEED_ADMIN_ACCESS_TOKEN)",
+      accessToken: adminAccessToken,
+    };
+  }
+
+  if (!clientId || !clientSecret) {
+    throw new Error(
+      "Missing authentication credentials. Provide SHOPIFY_SEED_ADMIN_ACCESS_TOKEN, or provide both SHOPIFY_SEED_CLIENT_ID and SHOPIFY_SEED_CLIENT_SECRET.",
+    );
+  }
+
+  const accessToken = await exchangeClientCredentialsToken(storeDomain, clientId, clientSecret);
+  return {
+    mode: "client credentials grant (SHOPIFY_SEED_CLIENT_ID + SHOPIFY_SEED_CLIENT_SECRET)",
+    accessToken,
+  };
+}
+
 async function graphQLRequest(client, query, variables) {
   let lastError = null;
 
@@ -532,20 +631,22 @@ async function main() {
   const defaultApiVersion = readDefaultApiVersionFromConfig();
   const apiVersion = (process.env.SHOPIFY_SEED_API_VERSION || defaultApiVersion).trim();
   const storeDomain = normalizeStoreDomain(process.env.SHOPIFY_SEED_STORE_DOMAIN);
-  const accessToken = (process.env.SHOPIFY_SEED_ADMIN_ACCESS_TOKEN || "").trim();
 
   if (!apiVersion) {
     throw new Error("SHOPIFY_SEED_API_VERSION resolved to an empty value.");
   }
 
-  if (!args.dryRun) {
-    if (!storeDomain) {
-      throw new Error("SHOPIFY_SEED_STORE_DOMAIN is required unless --dry-run is used.");
-    }
-    if (!accessToken) {
-      throw new Error("SHOPIFY_SEED_ADMIN_ACCESS_TOKEN is required unless --dry-run is used.");
-    }
+  if (!storeDomain && !args.dryRun) {
+    throw new Error("SHOPIFY_SEED_STORE_DOMAIN is required unless --dry-run is used.");
   }
+
+  if (args.customerCount < RECOMMENDED_MIN_CUSTOMER_COUNT) {
+    console.warn(
+      `Warning: --customers=${args.customerCount} is below the recommended ${RECOMMENDED_MIN_CUSTOMER_COUNT}+ for realistic churn testing.`,
+    );
+  }
+
+  const auth = await resolveAccessToken({ dryRun: args.dryRun, storeDomain });
 
   console.log("ChurnScout Shopify Dev Seeder");
   console.log("--------------------------------");
@@ -553,11 +654,12 @@ async function main() {
   console.log(`Customers: ${args.customerCount}`);
   console.log(`API Version: ${apiVersion}`);
   console.log(`Store domain: ${storeDomain || "(not required in dry-run)"}`);
+  console.log(`Auth mode: ${auth.mode}`);
   console.log(`Order delay: ${args.orderDelayMs}ms`);
 
   const client = {
     endpoint: storeDomain ? `https://${storeDomain}/admin/api/${apiVersion}/graphql.json` : "",
-    accessToken,
+    accessToken: auth.accessToken,
   };
 
   let currencyCode = "USD";
