@@ -3,7 +3,7 @@
   "private": true,
   "scripts": {
     "build": "react-router build",
-    "test:domain": "tsc -p tsconfig.domain-tests.json && node --test .tmp-tests/customerMetrics.test.js",
+    "test:domain": "tsc -p tsconfig.domain-tests.json && node --test .tmp-tests/domain/customerMetrics.test.js .tmp-tests/services/shopifyOrderHistory.server.test.js",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",

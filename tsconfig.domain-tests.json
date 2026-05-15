@@ -7,5 +7,5 @@
     "sourceMap": false,
     "types": ["node"]
   },
-  "include": ["app/domain/customerMetrics.ts", "app/domain/customerMetrics.test.ts"]
+  "include": ["app/domain/customerMetrics.test.ts", "app/services/shopifyOrderHistory.server.test.ts"]
 }
