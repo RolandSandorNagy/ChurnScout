@@ -65,6 +65,9 @@ interface Customer {
   riskScore: number;
   recoveryOpportunity: number;
   explanation: string;
+  segmentRuleSummary: string;
+  atRiskThresholdDays: number | null;
+  lostThresholdDays: number | null;
   suggestedAction: string;
   whyFlagged: string;
 }
@@ -72,6 +75,9 @@ interface Customer {
 const HIGH_SPEND_THRESHOLD = 1000;
 const HIGH_ORDER_COUNT_THRESHOLD = 6;
 const HIGH_RISK_THRESHOLD = 80;
+const SEGMENT_VIP_SPEND_THRESHOLD = 1000;
+const SEGMENT_VIP_ORDER_THRESHOLD = 10;
+const SEGMENT_NEW_CUSTOMER_WINDOW_DAYS = 30;
 
 function toUiSegment(segment: CustomerSegment): Segment {
   if (segment === "AT_RISK") return "At Risk";
@@ -98,6 +104,64 @@ function fmtDays(n: number): string {
 
 function roundMoney(value: number): number {
   return Math.round(value * 100) / 100;
+}
+
+function roundDays(value: number): number {
+  return Math.round(value * 10) / 10;
+}
+
+function deriveSegmentTimingThresholds(orderCount: number, averageDaysBetweenOrders: number) {
+  if (orderCount < 2) {
+    return {
+      atRiskThresholdDays: null,
+      lostThresholdDays: null,
+    };
+  }
+
+  return {
+    atRiskThresholdDays: roundDays(Math.max(45, averageDaysBetweenOrders * 1.5)),
+    lostThresholdDays: roundDays(Math.max(90, averageDaysBetweenOrders * 2.5)),
+  };
+}
+
+function deriveSegmentRuleSummary(customer: {
+  segment: Segment;
+  orderCount: number;
+  totalSpent: number;
+  daysSinceLastOrder: number;
+  avgOrderFrequencyDays: number;
+  atRiskThresholdDays: number | null;
+  lostThresholdDays: number | null;
+}): string {
+  if (customer.segment === "Lost") {
+    return `LOST because ${customer.daysSinceLastOrder}d since last order is above lost threshold ${fmtDays(customer.lostThresholdDays ?? 0)}d.`;
+  }
+
+  if (customer.segment === "At Risk") {
+    return `AT_RISK because ${customer.daysSinceLastOrder}d since last order is above at-risk threshold ${fmtDays(customer.atRiskThresholdDays ?? 0)}d.`;
+  }
+
+  if (customer.segment === "VIP") {
+    if (customer.totalSpent >= SEGMENT_VIP_SPEND_THRESHOLD) {
+      return `VIP because total spend $${fmtMoney(customer.totalSpent)} is above $${fmtMoney(SEGMENT_VIP_SPEND_THRESHOLD)}.`;
+    }
+
+    return `VIP because order count ${customer.orderCount} is at least ${SEGMENT_VIP_ORDER_THRESHOLD}.`;
+  }
+
+  if (customer.segment === "Loyal") {
+    return `LOYAL because customer has ${customer.orderCount} orders and is still within normal timing.`;
+  }
+
+  if (customer.segment === "Repeat") {
+    return `REPEAT because customer has ${customer.orderCount} orders and no at-risk timing breach.`;
+  }
+
+  if (customer.orderCount === 1 && customer.daysSinceLastOrder <= SEGMENT_NEW_CUSTOMER_WINDOW_DAYS) {
+    return `NEW because customer has 1 order within ${SEGMENT_NEW_CUSTOMER_WINDOW_DAYS} days.`;
+  }
+
+  return "NEW because customer has limited order history and no churn-timing signal yet.";
 }
 
 function buildOverdueMultiple(daysSinceLastOrder: number, avgOrderFrequencyDays: number, orderCount: number): string | null {
@@ -247,6 +311,10 @@ function deriveWhyFlagged(customer: {
 
 function toCustomer(metrics: CustomerMetrics): Customer {
   const segment = toUiSegment(metrics.segment);
+  const { atRiskThresholdDays, lostThresholdDays } = deriveSegmentTimingThresholds(
+    metrics.orderCount,
+    metrics.averageDaysBetweenOrders,
+  );
 
   const baseCustomer = {
     id: metrics.shopifyCustomerId,
@@ -261,6 +329,8 @@ function toCustomer(metrics: CustomerMetrics): Customer {
     delayDays: metrics.daysOverdue,
     riskScore: metrics.riskScore,
     explanation: metrics.explanation,
+    atRiskThresholdDays,
+    lostThresholdDays,
   };
 
   const priority = derivePriority(baseCustomer);
@@ -274,6 +344,15 @@ function toCustomer(metrics: CustomerMetrics): Customer {
     ...baseCustomer,
     priority,
     recoveryOpportunity,
+    segmentRuleSummary: deriveSegmentRuleSummary({
+      segment: baseCustomer.segment,
+      orderCount: baseCustomer.orderCount,
+      totalSpent: baseCustomer.totalSpent,
+      daysSinceLastOrder: baseCustomer.daysSinceLastOrder,
+      avgOrderFrequencyDays: baseCustomer.avgOrderFrequencyDays,
+      atRiskThresholdDays: baseCustomer.atRiskThresholdDays,
+      lostThresholdDays: baseCustomer.lostThresholdDays,
+    }),
     suggestedAction: deriveSuggestedAction({
       segment: baseCustomer.segment,
       priority,
@@ -437,8 +516,53 @@ export default function Index() {
 
       <s-section heading="How ChurnScout calculates this">
         <div className={styles.calcBox}>
-          ChurnScout compares each customer's usual purchase rhythm with their days since last order, then combines
-          overdue timing and customer value to assign priority and recommended actions.
+          ChurnScout segments customers from order history using transparent timing and value rules. Timing rules
+          compare days since last order against each customer's own purchase cadence.
+        </div>
+        <div className={styles.segmentRulesWrapper}>
+          <table className={styles.segmentRulesTable}>
+            <thead>
+              <tr>
+                <th>Segment</th>
+                <th>Rule</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Lost</td>
+                <td>
+                  2+ orders and <code>days since last order &gt; max(90, avg cadence * 2.5)</code>
+                </td>
+              </tr>
+              <tr>
+                <td>At Risk</td>
+                <td>
+                  2+ orders and <code>days since last order &gt; max(45, avg cadence * 1.5)</code>, but not Lost
+                </td>
+              </tr>
+              <tr>
+                <td>VIP</td>
+                <td>
+                  <code>total spent &gt;= ${SEGMENT_VIP_SPEND_THRESHOLD}</code> or{" "}
+                  <code>order count &gt;= {SEGMENT_VIP_ORDER_THRESHOLD}</code>
+                </td>
+              </tr>
+              <tr>
+                <td>Loyal</td>
+                <td>3+ orders, not At Risk/Lost/VIP</td>
+              </tr>
+              <tr>
+                <td>Repeat</td>
+                <td>2 orders, not At Risk/Lost/VIP</td>
+              </tr>
+              <tr>
+                <td>New</td>
+                <td>
+                  1 order within {SEGMENT_NEW_CUSTOMER_WINDOW_DAYS} days, or limited history without risk signal
+                </td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </s-section>
 
@@ -562,6 +686,16 @@ export default function Index() {
                             <strong>Segment reasoning:</strong> {customer.explanation} Last order: {customer.lastOrderDate}. Expected
                             next order: {customer.expectedNextOrderDate}. Estimated recovery opportunity: $
                             {fmtMoney(customer.recoveryOpportunity)}.
+                          </p>
+                          <p className={styles.detailsText}>
+                            <strong>Rule triggered:</strong> {customer.segmentRuleSummary}
+                          </p>
+                          <p className={styles.detailsText}>
+                            <strong>Rule inputs:</strong> {customer.daysSinceLastOrder}d since last order, avg cadence{" "}
+                            {customer.orderCount >= 2 ? `${fmtDays(customer.avgOrderFrequencyDays)}d` : "not established"}.
+                            {customer.atRiskThresholdDays !== null
+                              ? ` At-risk threshold ${fmtDays(customer.atRiskThresholdDays)}d, lost threshold ${fmtDays(customer.lostThresholdDays ?? 0)}d.`
+                              : " At-risk/lost thresholds activate after 2+ orders."}
                           </p>
                         </td>
                       </tr>

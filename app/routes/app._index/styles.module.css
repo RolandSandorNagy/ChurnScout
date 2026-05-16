@@ -134,6 +134,47 @@
   line-height: 1.6;
 }
 
+.segmentRulesWrapper {
+  margin-top: 10px;
+  border: 1px solid #e1e3e5;
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.segmentRulesTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+}
+
+.segmentRulesTable th,
+.segmentRulesTable td {
+  border-bottom: 1px solid #f1f2f3;
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.segmentRulesTable thead th {
+  font-size: 0.72rem;
+  color: #6d7175;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #f6f6f7;
+}
+
+.segmentRulesTable tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.segmentRulesTable code {
+  background: #f6f6f7;
+  border: 1px solid #e1e3e5;
+  border-radius: 4px;
+  padding: 1px 4px;
+  font-size: 0.75rem;
+}
+
 .mockActions {
   display: flex;
   flex-wrap: wrap;
