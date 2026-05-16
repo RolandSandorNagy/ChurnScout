@@ -337,6 +337,9 @@
 
 .customerControls {
   margin-top: 4px;
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .compactStat {
@@ -428,6 +431,8 @@
 }
 
 .detailsButton {
+  display: inline-flex;
+  align-items: center;
   border: 1px solid #c9cccf;
   border-radius: 6px;
   background: #ffffff;
@@ -436,6 +441,7 @@
   padding: 3px 7px;
   cursor: pointer;
   white-space: nowrap;
+  text-decoration: none;
 }
 
 .detailsButton:hover {

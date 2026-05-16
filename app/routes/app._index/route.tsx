@@ -12,6 +12,7 @@ const LIVE_PREVIEW_ORDER_LIMIT = 100;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
+  const shopDomain = new URL(request.url).searchParams.get("shop");
 
   const fallbackMetrics = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) =>
     calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW }),
@@ -33,6 +34,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       return {
         dataSource: "live" as const,
         metrics: liveMetrics,
+        shopDomain,
       };
     }
   } catch (_error) {
@@ -42,6 +44,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   return {
     dataSource: "mock" as const,
     metrics: fallbackMetrics,
+    shopDomain,
   };
 };
 
@@ -414,8 +417,35 @@ function delayLabel(delayDays: number) {
   return `${delayDays}d overdue`;
 }
 
+function extractNumericIdFromGid(gid: string): string | null {
+  const match = gid.match(/\/(\d+)$/);
+  return match?.[1] ?? null;
+}
+
+function buildShopifyCustomerAdminUrl(shopDomain: string | null, customerGid: string): string | null {
+  if (!shopDomain) return null;
+
+  const numericId = extractNumericIdFromGid(customerGid);
+  if (!numericId) return null;
+
+  return `https://${shopDomain}/admin/customers/${numericId}`;
+}
+
+function compareCustomersByPriorityAndRisk(a: Customer, b: Customer): number {
+  const priorityDelta = PRIORITY_SORT_WEIGHT[b.priority] - PRIORITY_SORT_WEIGHT[a.priority];
+  if (priorityDelta !== 0) return priorityDelta;
+
+  const riskDelta = b.riskScore - a.riskScore;
+  if (riskDelta !== 0) return riskDelta;
+
+  const opportunityDelta = b.recoveryOpportunity - a.recoveryOpportunity;
+  if (opportunityDelta !== 0) return opportunityDelta;
+
+  return b.totalSpent - a.totalSpent;
+}
+
 export default function Index() {
-  const { dataSource, metrics } = useLoaderData<typeof loader>();
+  const { dataSource, metrics, shopDomain } = useLoaderData<typeof loader>();
   const customers = metrics.map(toCustomer);
 
   const [activeTab, setActiveTab] = useState<Tab>("All");
@@ -426,22 +456,14 @@ export default function Index() {
   const highPriorityWinbacks = customers.filter((c) => c.priority === "High");
   const revenueOpportunity = customers.reduce((sum, customer) => sum + customer.recoveryOpportunity, 0);
 
+  const sortedCustomers = [...customers].sort(compareCustomersByPriorityAndRisk);
+
   const filtered =
     activeTab === "All"
-      ? customers
-      : customers.filter((customer) => customer.segment === activeTab);
+      ? sortedCustomers
+      : sortedCustomers.filter((customer) => customer.segment === activeTab);
 
-  const sortedByPriority = [...customers].sort((a, b) => {
-    const priorityDelta = PRIORITY_SORT_WEIGHT[b.priority] - PRIORITY_SORT_WEIGHT[a.priority];
-    if (priorityDelta !== 0) return priorityDelta;
-
-    const opportunityDelta = b.recoveryOpportunity - a.recoveryOpportunity;
-    if (opportunityDelta !== 0) return opportunityDelta;
-
-    return b.riskScore - a.riskScore;
-  });
-
-  const topPriorityCustomers = sortedByPriority.filter((customer) => customer.priority !== "Low").slice(0, 4);
+  const topPriorityCustomers = sortedCustomers.filter((customer) => customer.priority !== "Low").slice(0, 4);
 
   const topPriorities =
     topPriorityCustomers.length > 0
@@ -567,25 +589,6 @@ export default function Index() {
       </s-section>
 
       <s-section heading="Customers">
-        <div className={styles.mockActions}>
-          <button type="button" className={styles.mockActionButton} disabled>
-            View in Shopify
-          </button>
-          <button type="button" className={styles.mockActionButton} disabled>
-            Create segment
-          </button>
-          <button type="button" className={styles.mockActionButton} disabled>
-            Export CSV
-          </button>
-          <button type="button" className={styles.mockActionButton} disabled>
-            Tag customers
-          </button>
-          <button type="button" className={styles.mockActionButton} disabled>
-            Send to Klaviyo
-          </button>
-        </div>
-        <p className={styles.mockActionNote}>Mock actions only. Coming soon.</p>
-
         <div className={styles.tabs}>
           {TABS.map((tab) => {
             const count =
@@ -623,12 +626,15 @@ export default function Index() {
             <tbody>
               {filtered.map((customer) => {
                 const isExpanded = expandedCustomerId === customer.id;
+                const shopifyCustomerUrl = buildShopifyCustomerAdminUrl(shopDomain, customer.id);
 
                 return (
                   <Fragment key={customer.id}>
                     <tr>
                       <td>
-                        <div className={styles.customerLabel}>Customer #{customer.id}</div>
+                        <div className={styles.customerLabel}>
+                          Customer #{extractNumericIdFromGid(customer.id) ?? customer.id}
+                        </div>
                         <div className={styles.customerControls}>
                           <button
                             type="button"
@@ -637,6 +643,16 @@ export default function Index() {
                           >
                             {isExpanded ? "Hide details" : "Details"}
                           </button>
+                          {shopifyCustomerUrl ? (
+                            <a
+                              className={styles.detailsButton}
+                              href={shopifyCustomerUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              View in Shopify
+                            </a>
+                          ) : null}
                         </div>
                       </td>
                       <td>
