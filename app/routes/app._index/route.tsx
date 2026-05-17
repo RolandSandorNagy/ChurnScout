@@ -55,6 +55,7 @@ type Tab = "All" | Segment;
 
 interface Customer {
   id: string;
+  displayLabel: string;
   segment: Segment;
   priority: Priority;
   orderCount: number;
@@ -321,6 +322,7 @@ function toCustomer(metrics: CustomerMetrics): Customer {
 
   const baseCustomer = {
     id: metrics.shopifyCustomerId,
+    displayLabel: buildCustomerDisplayLabel(metrics.shopifyCustomerId),
     segment,
     orderCount: metrics.orderCount,
     totalSpent: metrics.totalSpent,
@@ -402,6 +404,7 @@ function fmt(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 0, maximumFractionDigits: 0 });
 }
 
+// TODO: Include Shopify currencyCode in UI formatting; this currently renders "$" with shopMoney amounts only.
 function fmtMoney(n: number) {
   return n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -420,6 +423,16 @@ function delayLabel(delayDays: number) {
 function extractNumericIdFromGid(gid: string): string | null {
   const match = gid.match(/\/(\d+)$/);
   return match?.[1] ?? null;
+}
+
+function toCompactCustomerId(numericId: string | null): string {
+  if (!numericId) return "Unknown";
+  return numericId.length <= 6 ? numericId : numericId.slice(-6);
+}
+
+function buildCustomerDisplayLabel(customerGid: string): string {
+  const numericId = extractNumericIdFromGid(customerGid);
+  return `Customer #${toCompactCustomerId(numericId)}`;
 }
 
 function buildShopifyCustomerAdminUrl(shopDomain: string | null, customerGid: string): string | null {
@@ -444,6 +457,10 @@ function compareCustomersByPriorityAndRisk(a: Customer, b: Customer): number {
   return b.totalSpent - a.totalSpent;
 }
 
+function formatOrderCount(orderCount: number): string {
+  return `${orderCount} ${orderCount === 1 ? "order" : "orders"}`;
+}
+
 export default function Index() {
   const { dataSource, metrics, shopDomain } = useLoaderData<typeof loader>();
   const customers = metrics.map(toCustomer);
@@ -465,13 +482,7 @@ export default function Index() {
 
   const topPriorityCustomers = sortedCustomers.filter((customer) => customer.priority !== "Low").slice(0, 4);
 
-  const topPriorities =
-    topPriorityCustomers.length > 0
-      ? topPriorityCustomers.map(
-          (customer) =>
-            `Customer #${customer.id}: ${customer.priority} priority, approx. $${fmt(customer.recoveryOpportunity)} recovery opportunity. ${customer.suggestedAction}.`,
-        )
-      : ["No urgent priorities this week. Keep monitoring customer rhythm and repeat purchases."];
+  const hasTopPriorities = topPriorityCustomers.length > 0;
 
   return (
     <s-page heading="ChurnScout">
@@ -529,63 +540,76 @@ export default function Index() {
       </s-section>
 
       <s-section heading="Top priorities this week">
-        <ul className={styles.priorityList}>
-          {topPriorities.map((priority) => (
-            <li key={priority}>{priority}</li>
-          ))}
-        </ul>
+        {hasTopPriorities ? (
+          <div className={styles.topPriorityGrid}>
+            {topPriorityCustomers.map((customer) => (
+              <article key={customer.id} className={styles.topPriorityCard}>
+                <div className={styles.topPriorityCustomer}>{customer.displayLabel}</div>
+                <div className={styles.topPriorityMeta}>
+                  {customer.priority} priority · ~${fmt(customer.recoveryOpportunity)} opportunity
+                </div>
+                <div className={styles.topPriorityAction}>{customer.suggestedAction}</div>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className={styles.filterNote}>No urgent priorities this week. Keep monitoring customer rhythm and repeat purchases.</p>
+        )}
       </s-section>
 
       <s-section heading="How ChurnScout calculates this">
-        <div className={styles.calcBox}>
-          ChurnScout segments customers from order history using transparent timing and value rules. Timing rules
-          compare days since last order against each customer's own purchase cadence.
-        </div>
-        <div className={styles.segmentRulesWrapper}>
-          <table className={styles.segmentRulesTable}>
-            <thead>
-              <tr>
-                <th>Segment</th>
-                <th>Rule</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td>Lost</td>
-                <td>
-                  2+ orders and <code>days since last order &gt; max(90, avg cadence * 2.5)</code>
-                </td>
-              </tr>
-              <tr>
-                <td>At Risk</td>
-                <td>
-                  2+ orders and <code>days since last order &gt; max(45, avg cadence * 1.5)</code>, but not Lost
-                </td>
-              </tr>
-              <tr>
-                <td>VIP</td>
-                <td>
-                  <code>total spent &gt;= ${SEGMENT_VIP_SPEND_THRESHOLD}</code> or{" "}
-                  <code>order count &gt;= {SEGMENT_VIP_ORDER_THRESHOLD}</code>
-                </td>
-              </tr>
-              <tr>
-                <td>Loyal</td>
-                <td>3+ orders, not At Risk/Lost/VIP</td>
-              </tr>
-              <tr>
-                <td>Repeat</td>
-                <td>2 orders, not At Risk/Lost/VIP</td>
-              </tr>
-              <tr>
-                <td>New</td>
-                <td>
-                  1 order within {SEGMENT_NEW_CUSTOMER_WINDOW_DAYS} days, or limited history without risk signal
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <details className={styles.calcDisclosure}>
+          <summary className={styles.calcSummary}>Show segmentation rules</summary>
+          <div className={styles.calcBox}>
+            ChurnScout segments customers from order history using transparent timing and value rules. Timing rules
+            compare days since last order against each customer's own purchase cadence.
+          </div>
+          <div className={styles.segmentRulesWrapper}>
+            <table className={styles.segmentRulesTable}>
+              <thead>
+                <tr>
+                  <th>Segment</th>
+                  <th>Rule</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>Lost</td>
+                  <td>
+                    2+ orders and <code>days since last order &gt; max(90, avg cadence * 2.5)</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td>At Risk</td>
+                  <td>
+                    2+ orders and <code>days since last order &gt; max(45, avg cadence * 1.5)</code>, but not Lost
+                  </td>
+                </tr>
+                <tr>
+                  <td>VIP</td>
+                  <td>
+                    <code>total spent &gt;= ${SEGMENT_VIP_SPEND_THRESHOLD}</code> or{" "}
+                    <code>order count &gt;= {SEGMENT_VIP_ORDER_THRESHOLD}</code>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Loyal</td>
+                  <td>3+ orders, not At Risk/Lost/VIP</td>
+                </tr>
+                <tr>
+                  <td>Repeat</td>
+                  <td>2 orders, not At Risk/Lost/VIP</td>
+                </tr>
+                <tr>
+                  <td>New</td>
+                  <td>
+                    1 order within {SEGMENT_NEW_CUSTOMER_WINDOW_DAYS} days, or limited history without risk signal
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </details>
       </s-section>
 
       <s-section heading="Customers">
@@ -632,9 +656,7 @@ export default function Index() {
                   <Fragment key={customer.id}>
                     <tr>
                       <td>
-                        <div className={styles.customerLabel}>
-                          Customer #{extractNumericIdFromGid(customer.id) ?? customer.id}
-                        </div>
+                        <div className={styles.customerLabel}>{customer.displayLabel}</div>
                         <div className={styles.customerControls}>
                           <button
                             type="button"
@@ -660,7 +682,7 @@ export default function Index() {
                       </td>
                       <td>
                         <div className={styles.compactStat}>
-                          {customer.orderCount} orders - ${fmtMoney(customer.totalSpent)} spent
+                          {formatOrderCount(customer.orderCount)} - ${fmtMoney(customer.totalSpent)} spent
                         </div>
                         <div className={styles.subtleText}>AOV ${fmtMoney(customer.averageOrderValue)}</div>
                       </td>
@@ -699,9 +721,12 @@ export default function Index() {
                       <tr className={styles.detailsRow}>
                         <td colSpan={6}>
                           <p className={styles.detailsText}>
-                            <strong>Segment reasoning:</strong> {customer.explanation} Last order: {customer.lastOrderDate}. Expected
-                            next order: {customer.expectedNextOrderDate}. Estimated recovery opportunity: $
+                            <strong>{customer.displayLabel}:</strong> Last order {customer.lastOrderDate}. Expected next
+                            order {customer.expectedNextOrderDate}. Estimated recovery opportunity $
                             {fmtMoney(customer.recoveryOpportunity)}.
+                          </p>
+                          <p className={styles.detailsText}>
+                            <strong>Segment reasoning:</strong> {customer.explanation}
                           </p>
                           <p className={styles.detailsText}>
                             <strong>Rule triggered:</strong> {customer.segmentRuleSummary}

@@ -124,6 +124,51 @@
   margin-top: 8px;
 }
 
+.topPriorityGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.topPriorityCard {
+  border: 1px solid #e1e3e5;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px 12px;
+}
+
+.topPriorityCustomer {
+  font-weight: 600;
+  color: #202223;
+  font-size: 0.86rem;
+}
+
+.topPriorityMeta {
+  margin-top: 3px;
+  color: #6d7175;
+  font-size: 0.78rem;
+  line-height: 1.3;
+}
+
+.topPriorityAction {
+  margin-top: 6px;
+  color: #202223;
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.calcDisclosure {
+  margin-top: 2px;
+}
+
+.calcSummary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: #2c6ecb;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
 .calcBox {
   background: #f6f6f7;
   border: 1px solid #e1e3e5;
