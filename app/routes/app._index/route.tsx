@@ -9,10 +9,17 @@ import { MOCK_CUSTOMER_ORDER_HISTORIES, MOCK_METRICS_NOW } from "./mockCustomerO
 import styles from "./styles.module.css";
 
 const LIVE_PREVIEW_ORDER_LIMIT = 100;
+const isDevelopment = process.env.NODE_ENV !== "production";
+
+type DataSource = "live" | "mock" | "empty" | "error";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin } = await authenticate.admin(request);
-  const shopDomain = new URL(request.url).searchParams.get("shop");
+  const requestUrl = new URL(request.url);
+  const shopDomain = requestUrl.searchParams.get("shop");
+  const isDemoMode =
+    isDevelopment &&
+    (requestUrl.searchParams.get("demo") === "1" || process.env.CHURNSCOUT_ENABLE_DEMO_MODE === "true");
 
   const fallbackMetrics = MOCK_CUSTOMER_ORDER_HISTORIES.map((history) =>
     calculateCustomerMetrics(history, { now: MOCK_METRICS_NOW }),
@@ -20,7 +27,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // TODO: Request read_all_orders if deeper order history is needed later.
   // TODO: Add an optional derived-metrics cache only if performance/reporting requires it.
-  // TODO: Add explicit merchant controls for refresh behavior and live-vs-mock fallback mode.
+  // Mock fallback is development-only so production never silently shows demo data.
+  if (isDemoMode) {
+    return {
+      dataSource: "mock" as DataSource,
+      metrics: fallbackMetrics,
+      shopDomain,
+    };
+  }
+
   try {
     const liveHistories = await fetchShopifyOrderHistory(admin, {
       limit: LIVE_PREVIEW_ORDER_LIMIT,
@@ -32,20 +47,42 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
     if (liveMetrics.length > 0) {
       return {
-        dataSource: "live" as const,
+        dataSource: "live" as DataSource,
         metrics: liveMetrics,
         shopDomain,
       };
     }
-  } catch (_error) {
-    // Keep dashboard stable and safely fall back to mock preview data.
-  }
 
-  return {
-    dataSource: "mock" as const,
-    metrics: fallbackMetrics,
-    shopDomain,
-  };
+    if (isDevelopment) {
+      return {
+        dataSource: "mock" as DataSource,
+        metrics: fallbackMetrics,
+        shopDomain,
+      };
+    }
+
+    // Production should render a clear empty state instead of demo data.
+    return {
+      dataSource: "empty" as DataSource,
+      metrics: [],
+      shopDomain,
+    };
+  } catch (_error) {
+    if (isDevelopment) {
+      return {
+        dataSource: "mock" as DataSource,
+        metrics: fallbackMetrics,
+        shopDomain,
+      };
+    }
+
+    // Production should render a safe error state without exposing internals.
+    return {
+      dataSource: "error" as DataSource,
+      metrics: [],
+      shopDomain,
+    };
+  }
 };
 
 type Segment = "At Risk" | "Lost" | "VIP" | "Loyal" | "Repeat" | "New";
@@ -465,6 +502,55 @@ export default function Index() {
   const { dataSource, metrics, shopDomain } = useLoaderData<typeof loader>();
   const customers = metrics.map(toCustomer);
 
+  if (dataSource === "empty") {
+    return (
+      <s-page heading="ChurnScout">
+        <p className={styles.subtitle}>
+          Detect at-risk customers and customer winback opportunities from Shopify order history.
+        </p>
+        <div className={styles.dataSourceMeta}>
+          <span className={`${styles.dataSourceBadge} ${styles.liveBadge}`}>Live Shopify data preview</span>
+          <p className={styles.dataSourceNote}>
+            Live preview fetches minimal Shopify order data in memory. ChurnScout does not store raw Shopify
+            order/customer data in this MVP.
+          </p>
+        </div>
+        <s-section heading="No order history available yet">
+          <div className={styles.stateBox}>
+            <p className={styles.stateTitle}>ChurnScout needs customers with order history to detect retention risks.</p>
+            <p className={styles.stateBody}>
+              Once your store has orders, this dashboard will show at-risk customers and winback opportunities.
+            </p>
+          </div>
+        </s-section>
+      </s-page>
+    );
+  }
+
+  if (dataSource === "error") {
+    return (
+      <s-page heading="ChurnScout">
+        <p className={styles.subtitle}>
+          Detect at-risk customers and customer winback opportunities from Shopify order history.
+        </p>
+        <div className={styles.dataSourceMeta}>
+          <span className={`${styles.dataSourceBadge} ${styles.liveBadge}`}>Live Shopify data preview</span>
+          <p className={styles.dataSourceNote}>
+            Live preview fetches minimal Shopify order data in memory. ChurnScout does not store raw Shopify
+            order/customer data in this MVP.
+          </p>
+        </div>
+        <s-section heading="Unable to load order insights">
+          <div className={styles.stateBoxError}>
+            <p className={styles.stateTitle}>
+              ChurnScout could not access order history right now. Please check app permissions or try again later.
+            </p>
+          </div>
+        </s-section>
+      </s-page>
+    );
+  }
+
   const [activeTab, setActiveTab] = useState<Tab>("All");
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
 
@@ -494,8 +580,9 @@ export default function Index() {
           {dataSource === "live" ? "Live Shopify data preview" : "Mock demo data"}
         </span>
         <p className={styles.dataSourceNote}>
-          Live preview fetches minimal Shopify order data in memory. ChurnScout does not store raw Shopify
-          order/customer data in this MVP.
+          {dataSource === "mock"
+            ? "This is development/demo data only. In production, ChurnScout shows empty or error states instead of silent demo fallback."
+            : "Live preview fetches minimal Shopify order data in memory. ChurnScout does not store raw Shopify order/customer data in this MVP."}
         </p>
       </div>
 
