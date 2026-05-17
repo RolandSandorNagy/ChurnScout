@@ -6,6 +6,7 @@ For ChurnScout MVP:
 
 - The app does **not** persist raw Shopify customer or order records in its database.
 - The app stores installation/session data used for authentication.
+- Data minimization details (including scope rationale) are documented in `docs/privacy-data-minimization.md`.
 
 ## Registered Compliance Topics
 

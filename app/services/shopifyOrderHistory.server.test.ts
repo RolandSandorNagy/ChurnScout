@@ -43,14 +43,15 @@ function toGraphqlPayload(page: MockOrdersPage) {
 
 function buildMockAdminClient(pages: MockOrdersPage[]): {
   client: ShopifyAdminGraphqlClient;
-  calls: Array<{ first: number; after: string | null }>;
+  calls: Array<{ query: string; first: number; after: string | null }>;
 } {
   let pageIndex = 0;
-  const calls: Array<{ first: number; after: string | null }> = [];
+  const calls: Array<{ query: string; first: number; after: string | null }> = [];
 
   const client: ShopifyAdminGraphqlClient = {
-    async graphql(_query, options) {
+    async graphql(query, options) {
       calls.push({
+        query,
         first: options?.variables?.first ?? -1,
         after: options?.variables?.after ?? null,
       });
@@ -110,9 +111,23 @@ test("fetches paginated orders, skips missing customer ids, and groups by custom
 
   const result = await fetchShopifyOrderHistory(client, { limit: 10, pageSize: 2 });
 
+  assert.match(calls[0].query, /processedAt/);
+  assert.match(calls[0].query, /currentTotalPriceSet/);
+  assert.match(calls[0].query, /shopMoney/);
+  assert.match(calls[0].query, /customer\s*\{\s*id/);
+  assert.doesNotMatch(calls[0].query, /email|firstName|lastName|phone|address/i);
+
   assert.deepEqual(calls, [
-    { first: 2, after: null },
-    { first: 2, after: "cursor-1" },
+    {
+      query: calls[0].query,
+      first: 2,
+      after: null,
+    },
+    {
+      query: calls[1].query,
+      first: 2,
+      after: "cursor-1",
+    },
   ]);
 
   assert.deepEqual(result, [
@@ -148,6 +163,7 @@ test("uses a safety guard when hasNextPage is true but endCursor is missing", as
   const result = await fetchShopifyOrderHistory(client, { limit: 10, pageSize: 5 });
 
   assert.equal(calls.length, 1);
+  assert.equal(typeof calls[0].query, "string");
   assert.deepEqual(result, [
     {
       shopifyCustomerId: "gid://shopify/Customer/10",
@@ -178,7 +194,9 @@ test("respects the configured limit", async () => {
 
   const result = await fetchShopifyOrderHistory(client, { limit: 1, pageSize: 50 });
 
-  assert.deepEqual(calls, [{ first: 1, after: null }]);
+  assert.equal(typeof calls[0].query, "string");
+  assert.equal(calls[0].first, 1);
+  assert.equal(calls[0].after, null);
   assert.equal(result.length, 1);
   assert.equal(result[0].shopifyCustomerId, "gid://shopify/Customer/20");
   assert.equal(result[0].orders.length, 1);
@@ -204,4 +222,3 @@ test("throws when Shopify GraphQL returns errors", async () => {
     /Access denied/,
   );
 });
-
